@@ -1,0 +1,8 @@
+build/
+skeet
+*.o
+*.d
+/test_*
+mock_server
+config.json
+*.log
