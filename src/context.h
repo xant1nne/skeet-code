@@ -47,4 +47,14 @@ void skeet_mark_file_read(SkeetCtx *ctx, const char *path);
 int skeet_is_file_read(SkeetCtx *ctx, const char *path);
 int skeet_pump(SkeetCtx *ctx);
 
+/* M6 Context & Session Management */
+int context_init_system_prompt(SkeetCtx *ctx, const char *model);
+size_t context_estimate_tokens(const SkeetCtx *ctx);
+int context_compact(SkeetCtx *ctx, size_t max_tokens);
+
+int session_save(SkeetCtx *ctx, const char *session_name);
+int session_load(SkeetCtx *ctx, const char *session_name);
+int session_list(SkeetCtx *ctx, char ***out_names, size_t *out_count);
+void session_list_free(char **names, size_t count);
+
 #endif

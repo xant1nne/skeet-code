@@ -8,12 +8,14 @@
 #include "tools/diff.h"
 #include "tools/registry.h"
 #include "tools/text_fallback.h"
+#include "tui/tui.h"
 
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX_TOOL_ITERATIONS 25
 
@@ -34,6 +36,9 @@ typedef struct AgentStreamCtx {
     ToolCallAccumulator acc;
     StrBuf text_buf;
     int first_token;
+    Tui *tui;
+    size_t token_count;
+    clock_t start_time;
 } AgentStreamCtx;
 
 static void agent_stream_callback(const char *data, size_t len, void *userdata) {
@@ -50,8 +55,14 @@ static void agent_stream_callback(const char *data, size_t len, void *userdata) 
             if (sctx->first_token) {
                 sctx->first_token = 0;
             }
-            fwrite(text_chunk, 1, strlen(text_chunk), stdout);
-            fflush(stdout);
+            sctx->token_count++;
+
+            if (sctx->tui && sctx->tui->is_interactive) {
+                tui_stream_token(sctx->tui, text_chunk);
+            } else {
+                fwrite(text_chunk, 1, strlen(text_chunk), stdout);
+                fflush(stdout);
+            }
 
             EventData ev;
             memset(&ev, 0, sizeof(ev));
@@ -63,7 +74,11 @@ static void agent_stream_callback(const char *data, size_t len, void *userdata) 
             free(text_chunk);
         }
         if (err_msg) {
-            printf("\n\033[1;31m[error]\033[0m %s\n", err_msg);
+            if (sctx->tui && sctx->tui->is_interactive) {
+                tui_append_error(sctx->tui, err_msg);
+            } else {
+                printf("\n\033[1;31m[error]\033[0m %s\n", err_msg);
+            }
             free(err_msg);
         }
     }
@@ -91,22 +106,38 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
     g_cancel_ptr = ctx->cancel;
     ctx->backend->cancel = ctx->cancel;
 
+#if !defined(SKEET_OS_WINDOWS)
     struct sigaction sa, old_sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = sigint_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, &old_sa);
+#else
+    signal(SIGINT, sigint_handler);
+#endif
 
     EventData ev_start;
     memset(&ev_start, 0, sizeof(ev_start));
     event_emit(ctx, EVENT_SESSION_START, &ev_start);
 
-    printf("\n\033[1;36m╭─ SKEET Code ──────────────────────────────────────────╮\033[0m\n");
-    printf("\033[1;36m│\033[0m Model:   %-46s \033[1;36m│\033[0m\n", model);
-    printf("\033[1;36m│\033[0m Backend: %-46s \033[1;36m│\033[0m\n", ctx->backend->name);
-    printf("\033[1;36m│\033[0m Type /help for commands, /quit or Ctrl+C to exit.      \033[1;36m│\033[0m\n");
-    printf("\033[1;36m╰───────────────────────────────────────────────────────╯\033[0m\n\n");
+    char *hist_path = config_history_path();
+    Tui *tui = tui_new(hist_path);
+    free(hist_path);
+
+    context_init_system_prompt(ctx, model);
+    size_t current_tokens = context_estimate_tokens(ctx);
+
+    if (tui && tui->is_interactive) {
+        tui_start(tui);
+        tui_set_status(tui, model, ctx->backend->name, current_tokens, 8192, 0.0, "ready");
+    } else {
+        printf("\n\033[1;36m╭─ SKEET Code ──────────────────────────────────────────╮\033[0m\n");
+        printf("\033[1;36m│\033[0m Model:   %-46s \033[1;36m│\033[0m\n", model);
+        printf("\033[1;36m│\033[0m Backend: %-46s \033[1;36m│\033[0m\n", ctx->backend->name);
+        printf("\033[1;36m│\033[0m Type /help for commands, /quit or Ctrl+C to exit.      \033[1;36m│\033[0m\n");
+        printf("\033[1;36m╰───────────────────────────────────────────────────────╯\033[0m\n\n");
+    }
 
     char input_line[8192];
 
@@ -117,29 +148,44 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
         }
         g_sigint_received = 0;
 
+        current_tokens = context_estimate_tokens(ctx);
+        if (current_tokens > 6500) {
+            int freed = context_compact(ctx, 4500);
+            if (freed > 0) {
+                current_tokens = context_estimate_tokens(ctx);
+            }
+        }
+        if (tui && tui->is_interactive) {
+            tui_set_status(tui, ctx->config && ctx->config->model ? ctx->config->model : model,
+                           ctx->backend ? ctx->backend->name : "none",
+                           current_tokens, 8192, 0.0, "ready");
+        }
+        g_sigint_received = 0;
+
         skeet_pump(ctx);
 
-        printf("\033[1;32mskeet>\033[0m ");
-        fflush(stdout);
+        int read_rc = 0;
+        if (tui && tui->is_interactive) {
+            read_rc = tui_read_line(tui, "\033[1;32mskeet>\033[0m ", input_line, sizeof(input_line));
+        } else {
+            printf("\033[1;32mskeet>\033[0m ");
+            fflush(stdout);
+            if (!fgets(input_line, sizeof(input_line), stdin)) {
+                read_rc = -1;
+            } else {
+                size_t in_len = strlen(input_line);
+                while (in_len > 0 && (input_line[in_len - 1] == '\n' || input_line[in_len - 1] == '\r')) {
+                    input_line[--in_len] = '\0';
+                }
+            }
+        }
 
-        if (!fgets(input_line, sizeof(input_line), stdin)) {
-            if (feof(stdin) || g_sigint_received) {
-                printf("\nBye.\n");
-                break;
-            }
-            if (errno == EINTR) {
-                clearerr(stdin);
-                printf("\nBye.\n");
-                break;
-            }
+        if (read_rc != 0 || g_sigint_received) {
+            if (!tui || !tui->is_interactive) printf("\nBye.\n");
             break;
         }
 
         size_t in_len = strlen(input_line);
-        while (in_len > 0 && (input_line[in_len - 1] == '\n' || input_line[in_len - 1] == '\r')) {
-            input_line[--in_len] = '\0';
-        }
-
         if (in_len == 0) {
             continue;
         }
@@ -148,12 +194,16 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
             int handled = 0;
             int exit_code = command_dispatch(ctx, input_line, &handled);
             if (handled && exit_code != 0) {
-                printf("Bye.\n");
+                if (!tui || !tui->is_interactive) printf("Bye.\n");
                 break;
             }
             if (handled) {
                 continue;
             }
+        }
+
+        if (tui && tui->is_interactive) {
+            tui_append_user_message(tui, input_line);
         }
 
         ensure_history_cap(ctx, 2);
@@ -186,9 +236,15 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
             AgentStreamCtx sctx;
             memset(&sctx, 0, sizeof(sctx));
             sctx.ctx = ctx;
+            sctx.tui = tui;
             accumulator_init(&sctx.acc);
             strbuf_init(&sctx.text_buf);
             sctx.first_token = 1;
+            sctx.start_time = clock();
+
+            if (tui && tui->is_interactive) {
+                tui_start_assistant_message(tui);
+            }
 
             g_in_stream = 1;
             if (ctx->cancel) {
@@ -199,20 +255,38 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
             int rc = ctx->backend->chat_stream(ctx->backend, &req, agent_stream_callback, &sctx);
             g_in_stream = 0;
 
+            clock_t end_time = clock();
+            double elapsed_sec = (double)(end_time - sctx.start_time) / CLOCKS_PER_SEC;
+            double tps = (elapsed_sec > 0.05 && sctx.token_count > 0) ? (double)sctx.token_count / elapsed_sec : 0.0;
+
+            if (tui && tui->is_interactive) {
+                tui_set_status(tui, model, ctx->backend->name, sctx.token_count, 0, tps, "idle");
+            }
+
             if (rc == 1 || (ctx->cancel && *ctx->cancel) || g_sigint_received) {
-                printf("\n\033[1;33m[Interrupted]\033[0m\n");
+                if (tui && tui->is_interactive) {
+                    tui_append_info(tui, "[Interrupted]");
+                } else {
+                    printf("\n\033[1;33m[Interrupted]\033[0m\n");
+                }
                 accumulator_free(&sctx.acc);
                 strbuf_free(&sctx.text_buf);
                 break;
             } else if (rc != 0) {
-                printf("\n\033[1;31m[Error communicating with model]\033[0m\n");
+                if (tui && tui->is_interactive) {
+                    tui_append_error(tui, "[Error communicating with model]");
+                } else {
+                    printf("\n\033[1;31m[Error communicating with model]\033[0m\n");
+                }
                 accumulator_free(&sctx.acc);
                 strbuf_free(&sctx.text_buf);
                 break;
             }
 
-            if (sctx.text_buf.len > 0) {
-                printf("\n");
+            if (!tui || !tui->is_interactive) {
+                if (sctx.text_buf.len > 0) {
+                    printf("\n");
+                }
             }
 
             ToolCall *calls = NULL;
@@ -241,6 +315,10 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
                     free(asst_text);
                 }
 
+                if (tui && tui->is_interactive) {
+                    tui_end_assistant_message(tui);
+                }
+
                 accumulator_free(&sctx.acc);
                 EventData ev_end;
                 memset(&ev_end, 0, sizeof(ev_end));
@@ -260,6 +338,9 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
             };
 
             accumulator_free(&sctx.acc);
+            if (tui && tui->is_interactive) {
+                tui_end_assistant_message(tui);
+            }
 
             for (size_t c = 0; c < call_count; c++) {
                 const ToolCall *tc = &calls[c];
@@ -292,9 +373,16 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
                         result.is_error = 1;
                         result.content = str_from_cstr("Tool execution denied by permission policy");
                     } else {
-                        printf("\033[1;34m[tool]\033[0m %s...\n", tool_name);
+                        if (!tui || !tui->is_interactive) {
+                            printf("\033[1;34m[tool]\033[0m %s...\n", tool_name);
+                        }
                         def->run(ctx, tc, &result, def->userdata);
                     }
+                }
+
+                if (tui && tui->is_interactive) {
+                    char *args_str = arena_strndup(&ctx->turn_arena, tc->args_json.ptr, tc->args_json.len);
+                    tui_append_tool(tui, tool_name, args_str, result.content.ptr, result.is_error);
                 }
 
                 EventData ev_after;
@@ -322,6 +410,12 @@ int agent_repl(SkeetCtx *ctx, const char *model) {
     memset(&ev_close, 0, sizeof(ev_close));
     event_emit(ctx, EVENT_SESSION_END, &ev_close);
 
+    if (tui) {
+        tui_free(tui);
+    }
+
+#if !defined(SKEET_OS_WINDOWS)
     sigaction(SIGINT, &old_sa, NULL);
+#endif
     return 0;
 }

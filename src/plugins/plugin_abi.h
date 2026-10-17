@@ -6,49 +6,78 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stddef.h>
 
-// Log levels (host-defined)
+#define SKEET_PLUGIN_ABI_VERSION 1
+
+// Tool flags
+#define SKEET_TOOL_READONLY       (1 << 0)
+#define SKEET_TOOL_NEEDS_CONFIRM  (1 << 1)
+
+// Log levels
 #define SKEET_LOG_DEBUG 0
 #define SKEET_LOG_INFO  1
 #define SKEET_LOG_WARN  2
 #define SKEET_LOG_ERROR 3
 
 // Return codes
-#define SKEET_OK 0
+#define SKEET_OK   0
 #define SKEET_ERR -1
 
-// Host API provided to plugins. All strings are NUL-terminated UTF-8.
-// register_tool / register_command expect a JSON string describing the tool/command.
-// call_host_tool should allocate a NUL-terminated JSON string in *out_json using
-// the host allocator (or return NULL on error). The host is responsible for
-// freeing out_json with host->free_func if provided.
+// Callback executed when the agent calls a plugin tool.
+// args_json: JSON string of arguments from model
+// out_result: allocated string with result (caller or host frees via free_func or host free)
+// out_is_error: set to 1 if tool failed, 0 if successful
+// Return 0 on success, -1 on failure
+typedef int (*skeet_tool_exec_fn)(const char *args_json, char **out_result, int *out_is_error, void *userdata);
 
-typedef int (*skeet_register_fn)(const char *json);
+// Callback executed when a slash command registered by plugin is typed
+typedef int (*skeet_cmd_exec_fn)(const char *args, char **out_msg, void *userdata);
+
+// Host logging callback
 typedef void (*skeet_log_fn)(int level, const char *msg);
-typedef int (*skeet_call_tool_fn)(const char *tool_name, const char *args_json, char **out_json);
 
+// Host memory free callback
 typedef void (*skeet_free_fn)(void *ptr);
 
+// Registration functions provided by Skeet host
+typedef int (*skeet_host_register_tool_fn)(
+    const char *name,
+    const char *description,
+    const char *schema_json,
+    uint32_t flags,
+    skeet_tool_exec_fn exec,
+    void *userdata
+);
+
+typedef int (*skeet_host_register_cmd_fn)(
+    const char *name,
+    const char *help,
+    skeet_cmd_exec_fn exec,
+    void *userdata
+);
+
+// Host API provided to plugins during init
 typedef struct SkeetHostApi {
-    skeet_register_fn register_tool;    // register a tool by JSON metadata
-    skeet_register_fn register_command; // register a slash command by JSON metadata
-    skeet_log_fn log;                   // logging callback
-    skeet_call_tool_fn call_host_tool;  // call a host-provided tool (optional)
-    skeet_free_fn free_func;            // host-provided free for returned pointers (optional)
-    const char *owner;                  // owner identifier string (NUL-terminated)
+    uint32_t size;
+    const char *owner;
+    const char *workspace_root;
+    skeet_host_register_tool_fn register_tool;
+    skeet_host_register_cmd_fn register_command;
+    skeet_log_fn log;
+    skeet_free_fn free_func;
 } SkeetHostApi;
 
-// Plugin entry points (exported symbols)
+// Exported plugin symbols (entry points implemented by .so / .dll / cdylib)
 
-// Returns ABI version supported by plugin
+// Returns SKEET_PLUGIN_ABI_VERSION
 uint32_t skeet_plugin_abi_version(void);
 
-// Initialize the plugin. host_api is owned by the host and valid during init.
-// Plugin should call register_tool/register_command to register capabilities.
-// Return 0 on success, non-zero on error.
+// Initialize the plugin. Host passes host_api structure.
+// Return 0 on success, -1 on error.
 int skeet_plugin_init(const SkeetHostApi *host_api);
 
-// Optional deinit called before unload. Return 0 on success.
+// Deinitialize the plugin before unload. Return 0 on success.
 int skeet_plugin_deinit(void);
 
 #ifdef __cplusplus

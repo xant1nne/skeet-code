@@ -1,0 +1,194 @@
+.TH SKEET 1 "2026" "skeet 1.0.0" "User Commands"
+.SH NAME
+skeet \- terminal AI coding agent powered by local LLMs
+.SH SYNOPSIS
+.B skeet
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B skeet
+is an interactive terminal AI coding agent in the style of Claude Code / OpenAI Codex,
+running entirely on local hardware via Ollama or llama.cpp backends.
+.PP
+It provides a conversational REPL where an LLM can read files, search code, apply
+patches, and run shell commands — all inside your project workspace — without sending
+data to remote services.
+.PP
+The agent uses a structured tool loop: the model calls built-in tools (read_file, grep,
+glob, edit_file, write_file, bash) and third-party plugins (native C ABI, Rust cdylib,
+Lua scripts), accumulates tool results, and produces a final answer.  Context is managed
+automatically and can be compacted at any time with \fB/compact\fR.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " \fIpath\fR"
+Path to a TOML config file.  Defaults to
+.I ~/.config/skeet/config.toml
+.TP
+.BR \-m ", " \-\-model " \fIname\fR"
+Model name to use (e.g.
+.IR qwen2.5\-coder:7b ,
+.IR codellama:13b ).
+Overrides the value in the config file.
+.TP
+.BR \-b ", " \-\-backend " \fIname\fR"
+Backend to use.  One of:
+.RS
+.IP "\fBollama\fR (default)"
+Talks to a running Ollama daemon via its HTTP API.
+.IP "\fBllama\fR"
+Calls llama.cpp's \fBllama\-server\fR compatible REST endpoint directly.
+.RE
+.TP
+.BR \-H ", " \-\-host " \fIurl\fR"
+Backend base URL.  Defaults to
+.I http://localhost:11434
+for Ollama and
+.I http://localhost:8080
+for llama.
+.TP
+.BR \-w ", " \-\-workspace " \fIdir\fR"
+Root directory that the agent is allowed to read and modify.
+Defaults to the current working directory.
+.TP
+.BR \-p ", " \-\-plugin " \fIpath\fR"
+Load a dynamic library plugin (\fI.so\fR on Linux/macOS, \fI.dll\fR on Windows).
+May be specified multiple times.
+.TP
+.BR \-L ", " \-\-lua " \fIpath\fR"
+Load a Lua plugin script.  Requires LuaJIT at runtime (looked up via
+.BR dlopen (3) ).
+May be specified multiple times.
+.TP
+.BR \-v ", " \-\-verbose
+Enable verbose logging (HTTP traffic, token counts, tool timings).
+.TP
+.BR \-\-version
+Print version and exit.
+.TP
+.BR \-h ", " \-\-help
+Show help and exit.
+.SH SLASH COMMANDS
+Inside the interactive REPL the following commands are available:
+.TP
+.B /help
+List all commands and tools.
+.TP
+.B /tools
+Show registered tools with descriptions.
+.TP
+.B /model \fIname\fR
+Switch to a different model mid-session.
+.TP
+.B /backend \fIname\fR
+Switch backend (ollama | llama).
+.TP
+.B /compact
+Summarise and discard old messages to free context window.
+.TP
+.B /session save \fIname\fR
+Save current session to disk.
+.TP
+.B /session load \fIname\fR
+Restore a saved session.
+.TP
+.B /session list
+List saved sessions.
+.TP
+.B /tune
+Run the hardware detector and print recommended GGUF parameters.
+.TP
+.B /clear
+Clear screen.
+.TP
+.B /exit " | " /quit
+Exit the agent.
+.SH ENVIRONMENT
+.TP
+.B SKEET_MODEL
+Default model name (overridden by \fB\-m\fR).
+.TP
+.B SKEET_BACKEND
+Default backend (overridden by \fB\-b\fR).
+.TP
+.B SKEET_HOST
+Backend URL (overridden by \fB\-H\fR).
+.TP
+.B SKEET_WORKSPACE
+Default workspace directory (overridden by \fB\-w\fR).
+.TP
+.B SKEET_LOG_LEVEL
+Logging verbosity: \fBdebug\fR, \fBinfo\fR, \fBwarn\fR, \fBerror\fR.
+.TP
+.B SKEET_PERMISSIONS
+Comma-separated list of allowed operations.
+Possible values: \fBread\fR, \fBwrite\fR, \fBbash\fR, \fBnet\fR.
+Defaults to \fBread,write,bash\fR.
+.SH FILES
+.TP
+.I ~/.config/skeet/config.toml
+User configuration file.
+.TP
+.I ~/.local/state/skeet/sessions/
+Saved session files (JSON).
+.TP
+.I ~/.local/state/skeet/history
+REPL input history.
+.TP
+.I {workspace}/SKEET.md
+Project-level conventions file.  If present, its contents are injected into
+the model's system prompt at session start.
+.TP
+.I {workspace}/.skeet/plugins/*.lua
+Project-local Lua plugins, auto-loaded at startup.
+.SH EXAMPLES
+Start an interactive session in the current directory with the default model:
+.PP
+.RS
+.nf
+skeet
+.fi
+.RE
+.PP
+Use a specific model and backend:
+.PP
+.RS
+.nf
+skeet -m codellama:13b -b ollama
+.fi
+.RE
+.PP
+Point the agent at a different project:
+.PP
+.RS
+.nf
+skeet -w ~/projects/myapp
+.fi
+.RE
+.PP
+Load a Rust plugin and a Lua plugin:
+.PP
+.RS
+.nf
+skeet -p ./plugins/libskeet_rust_codex_tools.so -L ./plugins/example_plugin.lua
+.fi
+.RE
+.PP
+Run with verbose logging to debug HTTP calls:
+.PP
+.RS
+.nf
+skeet -v
+.fi
+.RE
+.SH SEE ALSO
+.BR ollama (1),
+.BR curl (1),
+.BR lua (1)
+.PP
+Project home: https://github.com/your-org/skeet-code
+.SH BUGS
+Report issues at https://github.com/your-org/skeet-code/issues
+.SH AUTHORS
+Skeet Code contributors.
+.SH LICENSE
+MIT License.  See LICENSE file distributed with the source.
+

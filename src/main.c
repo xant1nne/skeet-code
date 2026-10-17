@@ -5,6 +5,8 @@
 #include "http.h"
 #include "log.h"
 #include "permissions.h"
+#include "plugins/plugin_loader.h"
+#include "plugins/lua_host.h"
 #include "tools/builtins.h"
 
 #include <getopt.h>
@@ -13,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SKEET_VERSION "0.3.0"
+#define SKEET_VERSION "1.0.0"
 
 static volatile sig_atomic_t g_cancel = 0;
 
@@ -25,6 +27,8 @@ static void print_usage(const char *prog) {
     printf("  -b, --backend <name>   Backend to use (ollama, llama)\n");
     printf("  -H, --host <url>       Backend host URL\n");
     printf("  -w, --workspace <dir>  Workspace directory (defaults to current dir)\n");
+    printf("  -p, --plugin <path>    Load dynamic library plugin (.so/.dll)\n");
+    printf("  -L, --lua <path>       Load Lua plugin script (.lua)\n");
     printf("  -y, --yes              Auto-confirm all tool executions (dangerous)\n");
     printf("      --ask              Ask confirmation for mutating tools (default)\n");
     printf("      --readonly         Strictly allow only read-only tools\n");
@@ -39,6 +43,10 @@ int main(int argc, char **argv) {
     const char *cli_backend = NULL;
     const char *cli_host = NULL;
     const char *cli_workspace = ".";
+    const char *cli_plugins[32];
+    size_t cli_plugins_count = 0;
+    const char *cli_lua[32];
+    size_t cli_lua_count = 0;
     int flag_list_models = 0;
     PermMode perm_mode = PERM_MODE_ASK;
 
@@ -53,6 +61,8 @@ int main(int argc, char **argv) {
         {"backend",     required_argument, 0, 'b'},
         {"host",        required_argument, 0, 'H'},
         {"workspace",   required_argument, 0, 'w'},
+        {"plugin",      required_argument, 0, 'p'},
+        {"lua",         required_argument, 0, 'L'},
         {"yes",         no_argument,       0, 'y'},
         {"ask",         no_argument,       0, OPT_ASK},
         {"readonly",    no_argument,       0, OPT_READONLY},
@@ -63,7 +73,7 @@ int main(int argc, char **argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:m:b:H:w:ylvh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:m:b:H:w:p:L:ylvh", long_options, NULL)) != -1) {
         switch (opt) {
         case 'c':
             config_path = optarg;
@@ -79,6 +89,16 @@ int main(int argc, char **argv) {
             break;
         case 'w':
             cli_workspace = optarg;
+            break;
+        case 'p':
+            if (cli_plugins_count < sizeof(cli_plugins) / sizeof(cli_plugins[0])) {
+                cli_plugins[cli_plugins_count++] = optarg;
+            }
+            break;
+        case 'L':
+            if (cli_lua_count < sizeof(cli_lua) / sizeof(cli_lua[0])) {
+                cli_lua[cli_lua_count++] = optarg;
+            }
             break;
         case 'y':
             perm_mode = PERM_MODE_YES;
@@ -227,7 +247,34 @@ int main(int argc, char **argv) {
     perm_set_mode(ctx, perm_mode);
     tools_register_all_builtins(ctx);
 
+    /* Initialize dynamic plugin manager (.so / .dll / cdylib) */
+    PluginManager *pm = plugin_manager_new(ctx);
+    if (pm) {
+        plugin_load_directory(pm, "plugins");
+        for (size_t i = 0; i < cli_plugins_count; i++) {
+            plugin_load(pm, cli_plugins[i]);
+        }
+    }
+
+    /* Initialize Lua plugin host (LuaJIT / Lua 5.1) */
+    LuaHost *lua_host = lua_host_new(ctx);
+    if (lua_host_is_available(lua_host)) {
+        lua_host_load_directory(lua_host, "plugins");
+        lua_host_load_directory(lua_host, ".skeet/plugins");
+        for (size_t i = 0; i < cli_lua_count; i++) {
+            lua_host_load_file(lua_host, cli_lua[i]);
+        }
+    }
+
     int rc = agent_repl(ctx, cfg.model);
+
+    if (lua_host) {
+        lua_host_free(lua_host);
+    }
+
+    if (pm) {
+        plugin_manager_free(pm);
+    }
 
     skeet_ctx_free(ctx);
     backend_free(backend);

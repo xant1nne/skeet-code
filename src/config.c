@@ -92,6 +92,48 @@ static char *default_log_path(void) {
     return dup_cstr(buf);
 }
 
+char *config_history_path(void) {
+    const char *xdg = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME");
+#if defined(_WIN32)
+    if (!home) home = getenv("USERPROFILE");
+#endif
+    char buf[4096];
+    int n;
+    if (xdg && xdg[0]) {
+        n = snprintf(buf, sizeof buf, "%s/skeet/history", xdg);
+    } else if (home && home[0]) {
+        n = snprintf(buf, sizeof buf, "%s/.local/state/skeet/history", home);
+    } else {
+        return dup_cstr("skeet.history");
+    }
+    if (n < 0 || (size_t)n >= sizeof buf) {
+        return NULL;
+    }
+    return dup_cstr(buf);
+}
+
+char *config_sessions_dir(void) {
+    const char *xdg = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME");
+#if defined(_WIN32)
+    if (!home) home = getenv("USERPROFILE");
+#endif
+    char buf[4096];
+    int n;
+    if (xdg && xdg[0]) {
+        n = snprintf(buf, sizeof buf, "%s/skeet/sessions", xdg);
+    } else if (home && home[0]) {
+        n = snprintf(buf, sizeof buf, "%s/.local/state/skeet/sessions", home);
+    } else {
+        return dup_cstr("sessions");
+    }
+    if (n < 0 || (size_t)n >= sizeof buf) {
+        return NULL;
+    }
+    return dup_cstr(buf);
+}
+
 static void config_clear(Config *cfg) {
     free(cfg->backend);
     free(cfg->model);

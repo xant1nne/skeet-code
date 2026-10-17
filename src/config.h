@@ -26,4 +26,10 @@ char *config_default_path(void);
 /* log_file when set, otherwise $XDG_STATE_HOME/skeet/skeet.log. malloc'd. */
 char *config_log_path(const Config *cfg);
 
+/* $XDG_STATE_HOME/skeet/history. malloc'd. */
+char *config_history_path(void);
+
+/* $XDG_STATE_HOME/skeet/sessions directory. malloc'd. */
+char *config_sessions_dir(void);
+
 #endif

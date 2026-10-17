@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+
+env:
+  RELEASE_FLAGS: "RELEASE=1"
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Linux build + test
+  # ──────────────────────────────────────────────
+  linux:
+    name: Linux (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc make pkg-config libcurl4-openssl-dev musl-tools
+
+      - name: Build (debug)
+        run: make -j$(nproc) all
+
+      - name: Run tests
+        run: make -j$(nproc) test
+
+      - name: Build release binary
+        run: |
+          make clean
+          CC=musl-gcc RELEASE=1 make -j$(nproc) all
+          strip skeet
+          mv skeet skeet-linux-x86_64
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skeet-linux-x86_64
+          path: skeet-linux-x86_64
+
+  # ──────────────────────────────────────────────
+  # macOS build + test (arm64 + x86_64 universal)
+  # ──────────────────────────────────────────────
+  macos:
+    name: macOS (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install curl pkg-config
+
+      - name: Build (debug)
+        run: make -j$(sysctl -n hw.logicalcpu) all
+
+      - name: Run tests
+        run: make -j$(sysctl -n hw.logicalcpu) test
+
+      - name: Build release binary (arm64)
+        run: |
+          make clean
+          ARCH_FLAGS="-arch arm64" RELEASE=1 \
+            CFLAGS="-Wall -Wextra -std=c11 -pedantic -O3 -DNDEBUG -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -arch arm64" \
+            make -j$(sysctl -n hw.logicalcpu) all
+          cp skeet skeet-arm64
+
+      - name: Build release binary (x86_64)
+        run: |
+          make clean
+          ARCH_FLAGS="-arch x86_64" RELEASE=1 \
+            CFLAGS="-Wall -Wextra -std=c11 -pedantic -O3 -DNDEBUG -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -arch x86_64" \
+            make -j$(sysctl -n hw.logicalcpu) all
+          cp skeet skeet-x86_64
+
+      - name: Create universal binary
+        run: |
+          lipo -create -output skeet-macos-universal skeet-arm64 skeet-x86_64
+          strip skeet-macos-universal
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skeet-macos-universal
+          path: skeet-macos-universal
+
+  # ──────────────────────────────────────────────
+  # Windows build (MinGW via MSYS2)
+  # ──────────────────────────────────────────────
+  windows:
+    name: Windows (windows-latest, MinGW)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-pkg-config
+            make
+
+      - name: Build (debug)
+        run: make -j4 all
+
+      - name: Run tests
+        run: make -j4 test
+
+      - name: Build release binary
+        run: |
+          make clean
+          RELEASE=1 make -j4 all
+          strip skeet.exe
+          mv skeet.exe skeet-windows-x86_64.exe
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skeet-windows-x86_64
+          path: skeet-windows-x86_64.exe
+
+  # ──────────────────────────────────────────────
+  # GitHub Release — only on version tags (v*)
+  # ──────────────────────────────────────────────
+  release:
+    name: Publish Release
+    needs: [linux, macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          files: |
+            dist/skeet-linux-x86_64/skeet-linux-x86_64
+            dist/skeet-macos-universal/skeet-macos-universal
+            dist/skeet-windows-x86_64/skeet-windows-x86_64.exe
+

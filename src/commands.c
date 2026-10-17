@@ -304,6 +304,134 @@ static int cmd_tune(SkeetCtx *ctx, const char *args, void *userdata) {
     return 0;
 }
 
+static int cmd_model(SkeetCtx *ctx, const char *args, void *userdata) {
+    (void)userdata;
+    if (!ctx) return 0;
+
+    while (args && (*args == ' ' || *args == '\t')) args++;
+
+    if (!args || !args[0]) {
+        printf("Current model: \033[1;36m%s\033[0m (backend: %s)\n",
+               ctx->config && ctx->config->model ? ctx->config->model : "none",
+               ctx->backend ? ctx->backend->name : "none");
+
+        if (ctx->backend && ctx->backend->list_models) {
+            ModelList list;
+            if (ctx->backend->list_models(ctx->backend, &list) == 0) {
+                printf("\nAvailable models (%zu):\n", list.count);
+                for (size_t i = 0; i < list.count; i++) {
+                    printf("  - %s%s\n", list.items[i].name,
+                           (ctx->config->model && strcmp(ctx->config->model, list.items[i].name) == 0) ? " (active)" : "");
+                }
+                model_list_free(&list);
+            }
+        }
+        return 0;
+    }
+
+    char new_model[128];
+    size_t mlen = 0;
+    while (args[mlen] && args[mlen] != ' ' && args[mlen] != '\t' && mlen < sizeof(new_model) - 1) {
+        new_model[mlen] = args[mlen];
+        mlen++;
+    }
+    new_model[mlen] = '\0';
+
+    if (ctx->config) {
+        free(ctx->config->model);
+        ctx->config->model = strdup(new_model);
+    }
+
+    if (ctx->backend && ctx->backend->start) {
+        printf("Restarting backend %s for model '%s'...\n", ctx->backend->name, new_model);
+        if (ctx->backend->start(ctx->backend, new_model) != 0) {
+            printf("\033[1;31mWarning: backend failed to start model '%s'\033[0m\n", new_model);
+            return -1;
+        }
+    }
+
+    printf("Switched model to: \033[1;32m%s\033[0m\n", new_model);
+    return 0;
+}
+
+static int cmd_compact(SkeetCtx *ctx, const char *args, void *userdata) {
+    (void)args;
+    (void)userdata;
+    if (!ctx) return 0;
+
+    size_t before = context_estimate_tokens(ctx);
+    int saved = context_compact(ctx, 0);
+    size_t after = context_estimate_tokens(ctx);
+
+    printf("Context compaction complete:\n");
+    printf("  Initial tokens:   ~%zu\n", before);
+    printf("  Tokens freed:     ~%d\n", saved);
+    printf("  Remaining tokens: ~%zu\n", after);
+    return 0;
+}
+
+static int cmd_session(SkeetCtx *ctx, const char *args, void *userdata) {
+    (void)userdata;
+    if (!ctx) return 0;
+
+    while (args && (*args == ' ' || *args == '\t')) args++;
+
+    if (!args || !args[0] || strcmp(args, "list") == 0) {
+        char **names = NULL;
+        size_t count = 0;
+        if (session_list(ctx, &names, &count) == 0) {
+            printf("\nSaved Sessions (%zu):\n", count);
+            for (size_t i = 0; i < count; i++) {
+                printf("  - %s\n", names[i]);
+            }
+            if (count == 0) {
+                printf("  (no saved sessions found in ~/.local/state/skeet/sessions)\n");
+            }
+            printf("\nUsage:\n");
+            printf("  /session save <name>   - Save current session\n");
+            printf("  /session load <name>   - Load saved session\n\n");
+            session_list_free(names, count);
+        } else {
+            printf("Failed to list sessions.\n");
+        }
+        return 0;
+    }
+
+    if (strncmp(args, "save ", 5) == 0) {
+        const char *name = args + 5;
+        while (*name == ' ' || *name == '\t') name++;
+        if (!name[0]) {
+            printf("Error: specify a session name (/session save <name>)\n");
+            return 0;
+        }
+        if (session_save(ctx, name) == 0) {
+            printf("Session '%s' successfully saved (%zu messages).\n", name, ctx->history_count);
+        } else {
+            printf("Failed to save session '%s'.\n", name);
+        }
+        return 0;
+    }
+
+    if (strncmp(args, "load ", 5) == 0) {
+        const char *name = args + 5;
+        while (*name == ' ' || *name == '\t') name++;
+        if (!name[0]) {
+            printf("Error: specify a session name (/session load <name>)\n");
+            return 0;
+        }
+        if (session_load(ctx, name) == 0) {
+            printf("Session '%s' successfully loaded (%zu messages, ~%zu tokens).\n",
+                   name, ctx->history_count, context_estimate_tokens(ctx));
+        } else {
+            printf("Failed to load session '%s'.\n", name);
+        }
+        return 0;
+    }
+
+    printf("Unknown session subcommand: '%s'. Use /session list, /session save <name>, /session load <name>\n", args);
+    return 0;
+}
+
 int commands_register_builtins(SkeetCtx *ctx) {
     if (!ctx) {
         return -1;
@@ -338,6 +466,36 @@ int commands_register_builtins(SkeetCtx *ctx) {
         .owner = "core"
     };
     command_register(ctx, &backend_cmd);
+
+    CommandDef model_cmd = {
+        .size = sizeof(CommandDef),
+        .name = "/model",
+        .help = "Switch or list active models (/model [name])",
+        .handler = cmd_model,
+        .userdata = NULL,
+        .owner = "core"
+    };
+    command_register(ctx, &model_cmd);
+
+    CommandDef compact_cmd = {
+        .size = sizeof(CommandDef),
+        .name = "/compact",
+        .help = "Compact message history and summarize old tool outputs",
+        .handler = cmd_compact,
+        .userdata = NULL,
+        .owner = "core"
+    };
+    command_register(ctx, &compact_cmd);
+
+    CommandDef session_cmd = {
+        .size = sizeof(CommandDef),
+        .name = "/session",
+        .help = "Manage sessions (/session list, save <name>, load <name>)",
+        .handler = cmd_session,
+        .userdata = NULL,
+        .owner = "core"
+    };
+    command_register(ctx, &session_cmd);
 
     CommandDef tune_cmd = {
         .size = sizeof(CommandDef),
