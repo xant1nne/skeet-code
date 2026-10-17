@@ -17,6 +17,9 @@ extern "C" {
 #define SKEET_OK 0
 #define SKEET_ERR -1
 
+// Forward decl for plugin call function type
+typedef int (*skeet_plugin_call_fn)(const char *name, const char *args_json, char **out_json);
+
 // Host API provided to plugins. All strings are NUL-terminated UTF-8.
 // register_tool / register_command expect a JSON string describing the tool/command.
 // call_host_tool should allocate a NUL-terminated JSON string in *out_json using
@@ -50,6 +53,11 @@ int skeet_plugin_init(const SkeetHostApi *host_api);
 
 // Optional deinit called before unload. Return 0 on success.
 int skeet_plugin_deinit(void);
+
+// Optional: plugin may export a call function which the host will use to invoke
+// registered tools/commands. Signature: skeet_plugin_call(const char *name, const char *args_json, char **out_json)
+// Returns 0 for success, non-zero for error. out_json should be malloc'd by the plugin and freed by host free().
+int skeet_plugin_call(const char *name, const char *args_json, char **out_json);
 
 #ifdef __cplusplus
 }
